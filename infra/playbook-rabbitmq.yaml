@@ -1,0 +1,202 @@
+- name: Configure EC2 instance and install RabbitMQ with MQTT plugin
+  hosts: all
+  remote_user: ubuntu
+  become: yes
+  tasks:
+    - name: Check if RabbitMQ is already installed
+      shell: |
+        if dpkg -l | grep -q rabbitmq-server; then
+          echo "RabbitMQ is already installed"
+          exit 0
+        else
+          exit 1
+        fi
+      register: rabbitmq_check
+      ignore_errors: yes
+
+    - name: Install RabbitMQ and dependencies
+      shell: |
+        sudo apt-get install curl gnupg apt-transport-https -y
+        curl -1sLf "https://keys.openpgp.org/vks/v1/by-fingerprint/0A9AF2115F4687BD29803A206B73A36E6026DFCA" | sudo gpg --dearmor | sudo tee /usr/share/keyrings/com.rabbitmq.team.gpg > /dev/null
+        curl -1sLf https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-erlang.E495BB49CC4BBE5B.key | sudo gpg --dearmor | sudo tee /usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg > /dev/null
+        curl -1sLf https://github.com/rabbitmq/signing-keys/releases/download/3.0/cloudsmith.rabbitmq-server.9F4587F226208342.key | sudo gpg --dearmor | sudo tee /usr/share/keyrings/rabbitmq.9F4587F226208342.gpg > /dev/null
+        sudo tee /etc/apt/sources.list.d/rabbitmq.list <<EOF
+        ## Provides modern Erlang/OTP releases
+        ##
+        deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/ubuntu noble main
+        deb-src [signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/ubuntu noble main
+
+        # another mirror for redundancy
+        deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/ubuntu noble main
+        deb-src [signed-by=/usr/share/keyrings/rabbitmq.E495BB49CC4BBE5B.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-erlang/deb/ubuntu noble main
+
+        ## Provides RabbitMQ
+        ##
+        deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-server/deb/ubuntu noble main
+        deb-src [signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa1.rabbitmq.com/rabbitmq/rabbitmq-server/deb/ubuntu noble main
+
+        # another mirror for redundancy
+        deb [arch=amd64 signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-server/deb/ubuntu noble main
+        deb-src [signed-by=/usr/share/keyrings/rabbitmq.9F4587F226208342.gpg] https://ppa2.rabbitmq.com/rabbitmq/rabbitmq-server/deb/ubuntu noble main
+        EOF
+        sudo apt-get update -y
+        sudo apt-get install -y erlang-base \
+                                erlang-asn1 erlang-crypto erlang-eldap erlang-ftp erlang-inets \
+                                erlang-mnesia erlang-os-mon erlang-parsetools erlang-public-key \
+                                erlang-runtime-tools erlang-snmp erlang-ssl \
+                                erlang-syntax-tools erlang-tftp erlang-tools erlang-xmerl
+        sudo apt-get install rabbitmq-server -y --fix-missing
+      register: rabbitmq_installed
+      ignore_errors: yes
+      when: rabbitmq_installed.failed is not defined or rabbitmq_installed.failed == false
+
+    - name: Enable and start RabbitMQ service
+      systemd:
+        name: rabbitmq-server
+        enabled: yes
+        state: started
+      ignore_errors: yes
+      when: rabbitmq_installed.failed is not defined or rabbitmq_installed.failed == false
+
+    - name: Enable RabbitMQ MQTT plugin
+      become: yes
+      command: rabbitmq-plugins enable rabbitmq_mqtt
+      notify:
+        - Restart RabbitMQ
+      when: rabbitmq_installed.failed is not defined or rabbitmq_installed.failed == false
+
+    - name: Install Nginx
+      apt:
+        name: nginx
+        state: present
+        update_cache: yes
+
+    - name: Start Nginx service
+      systemd:
+        name: nginx
+        enabled: yes
+        state: started
+
+    - name: Install Certbot
+      apt:
+        name: certbot
+        state: present
+        update_cache: yes
+
+    - name: Install python3-certbot-nginx
+      apt:
+        name: python3-certbot-nginx
+        state: present
+        update_cache: yes
+
+    - name: Obtain SSL certificate for pipebin.de
+      command: certbot --nginx -d pipebin.de --non-interactive --agree-tos -m sven.eliasson@rysta.de
+      notify:
+        - Restart Nginx
+
+    - name: Configure Nginx for WebSocket, SSL WebSocket, and Website
+      tags: config
+      copy:
+        content: |
+          server {
+              listen 8000;
+              access_log /var/log/nginx/tennisboard_access.log;
+              error_log /var/log/nginx/tennisboard_error.log;
+              location /mqtt/ {
+                  proxy_pass http://localhost:15675/ws/;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "Upgrade";
+                  proxy_set_header Host $host;
+              }
+              location / {
+                  root /var/www/html;
+                  index index.html index.htm;
+              }
+          }
+          server {
+              listen 8884 ssl;
+              server_name pipebin.de;
+              ssl_certificate /etc/letsencrypt/live/pipebin.de/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/pipebin.de/privkey.pem;
+              ssl_protocols TLSv1.2 TLSv1.3;
+              ssl_ciphers HIGH:!aNULL:!MD5;
+              access_log /var/log/nginx/tennisboard_ssl_access.log;
+              error_log /var/log/nginx/tennisboard_ssl_error.log;
+
+              # Handle WebSocket connections over SSL
+              location /mqtt {
+                  proxy_pass http://localhost:15675/ws/;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "Upgrade";
+                  proxy_set_header Host $host;
+                  proxy_set_header X-Real-IP $remote_addr;
+                  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+
+                  # WebSocket specific timeouts
+                  proxy_read_timeout 86400s;
+                  proxy_send_timeout 86400s;
+                  proxy_connect_timeout 86400s;
+              }
+
+              # Serve static content
+              location / {
+                  root /var/www/html;
+                  index index.html index.htm;
+              }
+          }
+
+          server {
+              listen 443 ssl;
+              server_name pipebin.de;
+              ssl_certificate /etc/letsencrypt/live/pipebin.de/fullchain.pem;
+              ssl_certificate_key /etc/letsencrypt/live/pipebin.de/privkey.pem;
+              access_log /var/log/nginx/tennisboard_ssl_access.log;
+              error_log /var/log/nginx/tennisboard_ssl_error.log;
+              location /mqtt {
+                  proxy_pass http://localhost:15675/ws/;
+                  proxy_http_version 1.1;
+                  proxy_set_header Upgrade $http_upgrade;
+                  proxy_set_header Connection "Upgrade";
+                  proxy_set_header Host $host;
+              }
+              location / {
+                  root /var/www/html;
+                  index index.html index.htm;
+              }
+          }
+        dest: /etc/nginx/sites-available/tennisboard
+        owner: root
+        group: root
+        mode: '0644'
+      notify:
+        - Restart Nginx
+
+    - name: Enable Nginx configuration
+      file:
+        src: /etc/nginx/sites-available/tennisboard
+        dest: /etc/nginx/sites-enabled/tennisboard
+        state: link
+        force: yes
+
+    - name: Remove default Nginx configuration
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Restart Nginx to apply configuration
+      systemd:
+        name: nginx
+        state: restarted
+
+  handlers:
+    - name: Restart Nginx
+      systemd:
+        name: nginx
+        state: restarted
+
+    - name: Restart RabbitMQ
+      systemd:
+        name: rabbitmq-server
+        state: restarted

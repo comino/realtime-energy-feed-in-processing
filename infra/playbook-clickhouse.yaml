@@ -1,0 +1,54 @@
+- name: Install ClickHouse
+  hosts: all
+  remote_user: ubuntu
+  become: yes
+  tasks:
+    - name: Install prerequisites
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+        update_cache: yes
+
+    - name: Add ClickHouse GPG key, overwriting if it already exists
+      shell: |
+        curl -fsSL 'https://packages.clickhouse.com/rpm/lts/repodata/repomd.xml.key' | sudo gpg --dearmor -o /usr/share/keyrings/clickhouse-keyring.gpg --yes
+
+
+    - name: Add ClickHouse repository if not already present
+      command: grep -q 'clickhouse' /etc/apt/sources.list.d/clickhouse.list
+      register: clickhouse_repo_check
+      ignore_errors: yes
+
+    - name: Add ClickHouse repository
+      command: echo "deb [signed-by=/usr/share/keyrings/clickhouse-keyring.gpg] https://packages.clickhouse.com/deb stable main" | sudo tee /etc/apt/sources.list.d/clickhouse.list
+      when: clickhouse_repo_check.rc != 0
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install ClickHouse server and client
+      apt:
+        name:
+          - clickhouse-server
+        state: present
+
+    - name: Install ClickHouse Keeper
+      apt:
+        name: clickhouse-keeper
+        state: present
+
+    - name: Enable ClickHouse Keeper
+      systemd:
+        name: clickhouse-keeper
+        enabled: yes
+        state: started
+
+    - name: Start ClickHouse server
+      service:
+        name: clickhouse-server
+        state: started

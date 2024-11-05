@@ -11,7 +11,9 @@ CREATE TABLE rabbit_queue
 (
     `t` UInt64,
     `id` UInt64,
-    `v` Float32
+    `v` Float32,
+    `long` Float32,
+    `lat` Float32
 ) ENGINE = RabbitMQ 
 SETTINGS
     rabbitmq_host_port = 'localhost:5672',
@@ -29,7 +31,9 @@ CREATE TABLE rabbit_events
 (
     `t` UInt64,
     `id` UInt64,
-    `v` Float32
+    `v` Float32,
+    `long` Float32,
+    `lat` Float32
 ) ENGINE = MergeTree
 ORDER BY (id, t)
 SETTINGS index_granularity = 8192;
@@ -38,7 +42,9 @@ CREATE TABLE rabbit_latest
 (
     `id` UInt64,
     `t` UInt64,
-    `v` Float32
+    `v` Float32,
+    `long` Float32,
+    `lat` Float32
 ) ENGINE = ReplacingMergeTree(t)
 ORDER BY id;
 

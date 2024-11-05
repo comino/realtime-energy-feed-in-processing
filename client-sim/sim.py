@@ -11,7 +11,7 @@ import random
 MQTT_BROKER = "49.13.127.227"
 MQTT_PORT = 1883
 MQTT_USERNAME = "energy"
-MQTT_PASSWORD = "*******"
+MQTT_PASSWORD = "****"
 MQTT_TOPIC = "data"
 
 # Sensor Parameters
@@ -144,10 +144,11 @@ class SensorSimulator:
                     
                     payload = {
                         "t": current_time,
+                        "id": sensor['id'],
                         "v": round(value, 2),
-                        "id": sensor['id']
+                        "long": round(48.0873829, 3), 
+                        "lat": round(11.4977297, 3)
                     }
-                    
                     sensor['client'].publish( MQTT_TOPIC, json.dumps(payload))
                 except Exception as e:
                     continue
